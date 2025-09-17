@@ -7,6 +7,8 @@ import claripy
 from angr.block import CapstoneInsn, DisassemblerInsn
 from capstone import *
 from keystone import *
+import pyvex
+import archinfo
 
 logging.getLogger('angr').setLevel(logging.ERROR)
 logging.getLogger('claripy').setLevel(logging.ERROR)
@@ -28,16 +30,9 @@ text_end = 0x1C597C
 
 class BrIfInfo:
     def __init__(self):
-        self.cmp: DisassemblerInsn = None
-        self.adrp: DisassemblerInsn = None
-        self.cset: DisassemblerInsn = None
-        self.add: DisassemblerInsn = None
-        self.ldr: DisassemblerInsn = None
         self.br: DisassemblerInsn = None
+        self.inst: list[DisassemblerInsn] = []
         self.jump_reg = None
-        self.ldr_base = None
-        self.ldr_index = None
-        self.cmp_reg = None
         self.block_addr = None
         self.true_value = None
         self.false_value = None
@@ -56,85 +51,18 @@ class BrIfInfoEncoder(json.JSONEncoder):
                     "op_str": inst.op_str,
                 }
 
+            inst = []
+            for item in obj.inst:
+                inst.append(serialize_instruction(item))
             return {
-                "cmp": serialize_instruction(obj.cmp),
-                "adrp": serialize_instruction(obj.adrp),
-                "cset": serialize_instruction(obj.cset),
-                "add": serialize_instruction(obj.add),
-                "ldr": serialize_instruction(obj.ldr),
+                "inst": inst,
                 "br": serialize_instruction(obj.br),
                 "jump_reg": obj.jump_reg,
-                "ldr_base": obj.ldr_base,
-                "ldr_index": obj.ldr_index,
-                "cmp_reg": obj.cmp_reg,
                 "block_addr": obj.block_addr,
                 "true_value": obj.true_value,
                 "false_value": obj.false_value,
                 "value": obj.value,
             }
-
-
-def judge_br_if(block: angr.Block):
-    br = BrIfInfo()
-    br.block_addr = block.addr
-    for inst in reversed(block.capstone.insns):
-        if inst and hasattr(inst, "mnemonic"):
-            if inst.mnemonic == "br":
-                if br.br:
-                    print("error br")
-                br.br = inst
-                br.jump_reg = inst.operands[0].value.reg
-
-            if br.br and inst.mnemonic == "ldr":
-                if inst.operands[0].type == CS_OP_REG and inst.operands[0].value.reg == br.jump_reg:
-                    br.ldr = inst
-                    br.ldr_base = inst.operands[1].value.mem.base
-                    br.ldr_index = inst.operands[1].value.mem.index
-
-            if br.ldr and inst.mnemonic == "add":
-                if inst.operands[0].type == CS_OP_REG and inst.operands[0].value.reg == br.ldr_base:
-                    br.add = inst
-
-            if br.add and inst.mnemonic == "cset":
-                if inst.operands[0].type == CS_OP_REG and inst.operands[0].value.reg == br.ldr_index:
-                    br.cset = inst
-
-            if br.cset and inst.mnemonic == "adrp":
-                if inst.operands[0].type == CS_OP_REG and inst.operands[0].value.reg == br.ldr_base:
-                    br.adrp = inst
-
-            if br.adrp and inst.mnemonic == "cmp":
-                if inst.operands[0].type == CS_OP_REG:
-                    br.cmp = inst
-                    br.cmp_reg = inst.operands[0].value.reg
-                    break
-    if br.br and br.br.operands[0].type == CS_OP_REG:
-        return br
-    return None
-
-
-def find_br_if():
-    result = []
-    current_addr = text_start
-    block = project.factory.block(current_addr)
-    while current_addr < text_end:
-        try:
-            info = judge_br_if(block)
-            if info:
-                result.append(info)
-                if len(result) % 10 == 0:
-                    open("br_if.json", "w").write(json.dumps(result, cls=BrIfInfoEncoder))
-            if block.size == 0:
-                current_addr += 4
-            else:
-                current_addr += block.size
-            block = project.factory.block(current_addr)
-            if current_addr % 10000 == 0:
-                print("find_br_if", current_addr)
-        except Exception as e:
-            print(e)
-    open("br_if.json", "w").write(json.dumps(result, cls=BrIfInfoEncoder))
-    return result
 
 
 def load_br_if(path):
@@ -149,20 +77,15 @@ def load_br_if(path):
             return None
 
         result = BrIfInfo()
-        result.cmp = json2inst(item["cmp"])
-        result.adrp = json2inst(item["adrp"])
-        result.cset = json2inst(item["cset"])
-        result.add = json2inst(item["add"])
-        result.ldr = json2inst(item["ldr"])
         result.br = json2inst(item["br"])
         result.jump_reg = item["jump_reg"]
-        result.ldr_base = item["ldr_base"]
-        result.ldr_index = item["ldr_index"]
-        result.cmp_reg = item["cmp_reg"]
         result.block_addr = item["block_addr"]
         result.true_value = item.get("true_value")
         result.false_value = item.get("false_value")
         result.value = item.get("value")
+        result.inst = []
+        for item in item["inst"]:
+            result.inst.append(json2inst(item))
         return result
 
     result = []
@@ -172,11 +95,149 @@ def load_br_if(path):
     return result
 
 
-def filter_br_if(list):
+def find_reg_dep_inst(irsb, target_reg):
+    def get_add_mapping(statements):
+        result = {}
+        last_addr = None
+        for idx in range(len(statements)):
+            stmt = statements[idx]
+            if isinstance(stmt, pyvex.IRStmt.IMark):
+                last_addr = stmt.addr
+            else:
+                result[idx] = last_addr
+        return result
+
+    def get_tmp_offset_key(offset):
+        return f"tmp_{offset}"
+
+    def get_reg_offset_key(offset):
+        return f"reg_{offset}"
+
+    def make_interested_value(datas):
+        result = {}
+        if not isinstance(datas, list) and not isinstance(datas, tuple):
+            datas = [datas]
+        for data in datas:
+            if isinstance(data, pyvex.expr.RdTmp):
+                result[get_tmp_offset_key(data.tmp)] = {
+                    "type": "tmp",
+                    "value": data.tmp,
+                }
+            elif isinstance(data, pyvex.expr.Unop):
+                result.update(make_interested_value(data.args))
+            elif isinstance(data, pyvex.expr.Load):
+                print("waring read mem")
+                result.update(make_interested_value(data.addr))
+            elif isinstance(data, pyvex.expr.Binop):
+                result.update(make_interested_value(data.args))
+            elif isinstance(data, pyvex.expr.CCall):
+                result.update(make_interested_value(data.args))
+            elif isinstance(data, pyvex.expr.ITE):
+                result.update(make_interested_value(data.child_expressions))
+                result.update(make_interested_value(data.cond))
+            elif isinstance(data, pyvex.expr.Get):
+                result[get_reg_offset_key(data.offset)] = {
+                    "type": "reg",
+                    "value": data.offset,
+                }
+            elif isinstance(data, pyvex.expr.Const):
+                pass
+            else:
+                print("unknow put.data op", data)
+        return result
+
+    target_reg_offset = archinfo.ArchAArch64().get_register_offset(target_reg)
+    statements = list(reversed(irsb.statements))
+    dependencies_idx = []
+    interested_value = {}
+    interested_value[get_reg_offset_key(target_reg_offset)] = {
+        "type": "reg",
+        "value": target_reg_offset,
+    }
+
+    for idx in range(len(statements)):
+        stmt = statements[idx]
+
+        find_key = None
+        find_value = None
+
+        if isinstance(stmt, pyvex.IRStmt.IMark):
+            continue
+        elif isinstance(stmt, pyvex.IRStmt.Put):
+            if get_reg_offset_key(stmt.offset) in interested_value.keys():
+                find_key = get_reg_offset_key(stmt.offset)
+                find_value = make_interested_value(stmt.data)
+        elif isinstance(stmt, pyvex.IRStmt.WrTmp):
+            if get_tmp_offset_key(stmt.tmp) in interested_value.keys():
+                find_key = get_tmp_offset_key(stmt.tmp)
+                find_value = make_interested_value(stmt.data)
+        elif isinstance(stmt, pyvex.IRStmt.Store):
+            if hasattr(stmt.data, "tmp") and get_tmp_offset_key(stmt.data.tmp) in interested_value.keys():
+                find_key = get_tmp_offset_key(stmt.data.tmp)
+                find_value = make_interested_value(stmt.data)
+        else:
+            print("unknow vex op ", stmt)
+
+        if find_key:
+            interested_value.update(find_value)
+            del interested_value[find_key]
+            dependencies_idx.append(idx)
+
+    count = len(irsb.statements)
+    addr_mapping = get_add_mapping(irsb.statements)
+    dependencies_addr = set()
+    for item in dependencies_idx:
+        dependencies_addr.add(addr_mapping[count - item - 1])
+
+    dependencies_addr = list(dependencies_addr)
+    dependencies_addr.sort()
+    return dependencies_addr
+
+
+def find_br(block: angr.Block):
+    br = BrIfInfo()
+    br.block_addr = block.addr
+    for inst in reversed(block.capstone.insns):
+        if inst and hasattr(inst, "mnemonic"):
+            if inst.mnemonic == "br":
+                if br.br:
+                    print("error br")
+                br.br = inst
+                br.jump_reg = inst.operands[0].value.reg
+
+    if br.br and br.br.operands[0].type == CS_OP_REG:
+        code_bytes = project.loader.memory.load(block.addr, block.size)
+        irsb = pyvex.lift(code_bytes, block.addr, archinfo.ArchAArch64(), opt_level=0)
+        dep_inst_addr = find_reg_dep_inst(irsb, cs.reg_name(br.jump_reg))
+        for inst in block.capstone.insns:
+            if inst.address in dep_inst_addr:
+                br.inst.append(inst)
+        br.inst.append(br.br)
+        return br
+    return None
+
+
+def find_br_if():
     result = []
-    for item in list:
-        if item.cmp is not None:
-            result.append(item)
+    current_addr = text_start
+    block = project.factory.block(current_addr)
+    while current_addr < text_end:
+        # try:
+        info = find_br(block)
+        if info:
+            result.append(info)
+            if len(result) % 10 == 0:
+                open("br_if.json", "w").write(json.dumps(result, cls=BrIfInfoEncoder))
+        if block.size == 0:
+            current_addr += 4
+        else:
+            current_addr += block.size
+        block = project.factory.block(current_addr)
+        if current_addr % 10000 == 0:
+            print("find_br_if", current_addr)
+        # except Exception as e:
+        #     print(e)
+    open("br_if.json", "w").write(json.dumps(result, cls=BrIfInfoEncoder))
     return result
 
 
@@ -375,8 +436,24 @@ class PatchSo:
 
 
 def patch_br_if(br):
-    sp = br.cset.op_str.split(",")
+    def has_one_inst(insts: [DisassemblerInsn], name):
+        result = []
+        for item in insts:
+            if item.mnemonic == name:
+                result.append(item)
+        return result
+
+    if not br.inst or len(br.inst) == 0:
+        return None
+    if br.inst[0].mnemonic != "cmp":
+        return None
+    cset = has_one_inst(br.inst, "cset")
+    if not cset:
+        return None
+
+    sp = cset[0].op_str.split(",")
     op = sp[1].strip()
+
     b_inst = None
     b_if_inst = None
     if op == "lt":
@@ -417,32 +494,31 @@ def patch_br_if(br):
         "addr": br.false_value
     }
 
-    size = br.br.address - br.cmp.address + 4
-    code = state.memory.load(br.cmp.address, size)
+    start_addr = br.inst[0].address
+    size = br.br.address - start_addr + 4
+    code = state.memory.load(start_addr, size)
     code_bytes = state.solver.eval(code, cast_to=bytes)
     codes = bytes_to_chunks(code_bytes)
-    nop_idx = [
-        int((br.cset.address - br.cmp.address) / 4),
-        int((br.add.address - br.cmp.address) / 4),
-        int((br.adrp.address - br.cmp.address) / 4),
-        int((br.ldr.address - br.cmp.address) / 4),
-        int((br.br.address - br.cmp.address) / 4),
-    ]
+    nop_idx = []
+    for ni in br.inst:
+        nop_idx.append(int((ni.address - start_addr) / 4))
 
     nop = ks.asm("nop", 0, True)[0]
     for idx in nop_idx:
         codes[idx] = None
+
     codes = move_none_to_end(codes)
     for idx in range(0, len(codes)):
         if codes[idx] is None:
             codes[idx] = nop
-    b_if_addr = br.cmp.address + size - 8
-    b_addr = br.cmp.address + size - 4
+
+    b_if_addr = start_addr + size - 8
+    b_addr = start_addr + size - 4
     codes[len(codes) - 2] = ks.asm(b_if_inst["op"] + " " + str(b_if_inst["addr"]), b_if_addr, True)[0]
     codes[len(codes) - 1] = ks.asm("b " + str(b_inst["addr"]), b_addr, True)[0]
     codes = chunks_to_bytes(codes)
     return {
-        "addr": br.cmp.address,
+        "addr": start_addr,
         "codes": codes
     }
 
@@ -473,10 +549,10 @@ def patch(br_list):
     return result
 
 
-# br_list = find_br_if()
-br_list = load_br_if("br_if_patch.json")
+br_list = find_br_if()
+# br_list = load_br_if("br_if_patch.json")
 # br_if_list = filter_br_if(br_list)
 # br = judge_br_if(project.factory.block(0x109284))
-# patch(make_pathc_info(br_list))
-patch(br_list)
+patch(make_pathc_info(br_list))
+# patch(br_list)
 # print(json.dumps(br_if_list, cls=BrIfInfoEncoder))
