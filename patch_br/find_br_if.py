@@ -17,15 +17,15 @@ logging.getLogger('cle').setLevel(logging.ERROR)
 
 cs = capstone.Cs(CS_ARCH_ARM64, CS_MODE_ARM)
 ks = keystone.Ks(KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN)
-so_path = r'D:\desktop\ollvm\360\ida\rep.so'
+so_path = r'D:\desktop\lg\lg\so\libcovault-appsec.so'
 project = angr.Project(so_path, auto_load_libs=False,
-                       load_options={'main_opts': {'base_addr': 0xC8000}})
+                       load_options={'main_opts': {'base_addr': 0}})
 
 state = project.factory.entry_state()
 
-text_start = 0xF3C8C
+text_start = 0x16FD0
 # text_start = 1241000
-text_end = 0x1C597C
+text_end = 0x1464BC
 
 
 class BrIfInfo:
