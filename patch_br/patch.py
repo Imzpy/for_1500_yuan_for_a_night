@@ -10,7 +10,7 @@ from keystone import *
 import pyvex
 import archinfo
 
-from patch_br.br_info import BrIfInfo, br_list_to_json
+from patch_br.br_info import BrIfInfo, br_list_to_json, load_br_list
 from patch_br.mico import find_reg_dep_inst
 from patch_br.patch_so import PatchSo
 from patch_br.tools import bytes_to_chunks, move_none_to_end, chunks_to_bytes
@@ -22,6 +22,7 @@ logging.getLogger('cle').setLevel(logging.ERROR)
 
 cs = capstone.Cs(CS_ARCH_ARM64, CS_MODE_ARM)
 ks = keystone.Ks(KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN)
+nop = ks.asm("nop", 0, True)[0]
 
 so_path = r'D:\desktop\ollvm\360\ida\rep.so'
 project = angr.Project(so_path, auto_load_libs=False,
@@ -153,7 +154,8 @@ def evl_indirect_br_value(br: BrIfInfo):
 def evl_direct_br_value(br: BrIfInfo):
     addr = br.br.address
     reg = cs.reg_name(br.jump_reg)
-    start = max(text_start, addr - 0x200)
+    # start = max(text_start, addr - 0x200)
+    start = br.block_addr
     if start < text_start:
         start = text_start
     state = project.factory.blank_state(addr=start)
@@ -226,21 +228,31 @@ def make_patch_info(br_if_list):
 
 
 def patch_cset_br(br):
-    def has_one_inst(insts: [DisassemblerInsn], name):
+    def find_all_inst(insts: [DisassemblerInsn], name):
         result = []
         for item in insts:
             if item.mnemonic == name:
                 result.append(item)
         return result
 
+    def only_has_one(insts: [DisassemblerInsn], name):
+        return len(find_all_inst(insts, name)) == 1
+
     if not br.inst or len(br.inst) == 0:
+        print("inst is empty", hex(br.block_addr))
         return None
-    if br.inst[0].mnemonic != "cmp" or br.inst[0].mnemonic != "tst":
+    if not (only_has_one(br.inst, "cmp") or
+            only_has_one(br.inst, "tst") or
+            only_has_one(br.inst, "fcmp") or
+            only_has_one(br.inst, "cmn")
+    ):
+        print("no cmp inst", hex(br.block_addr))
         return None
-    cset = has_one_inst(br.inst, "cset")
-    if not cset:
+    if not only_has_one(br.inst, "cset"):
+        print("no cset inst", hex(br.block_addr))
         return None
 
+    cset = find_all_inst(br.inst, "cset")
     sp = cset[0].op_str.split(",")
     op = sp[1].strip()
 
@@ -276,6 +288,21 @@ def patch_cset_br(br):
             "op": "b.gt",
             "addr": br.true_value
         }
+    elif op == "le":
+        b_if_inst = {
+            "op": "b.le",
+            "addr": br.true_value
+        }
+    elif op == "ge":
+        b_if_inst = {
+            "op": "b.ge",
+            "addr": br.true_value
+        }
+    elif op == "mi":
+        b_if_inst = {
+            "op": "b.mi",
+            "addr": br.true_value
+        }
     else:
         print("unknown op ", op, hex(br.block_addr))
         return
@@ -293,7 +320,6 @@ def patch_cset_br(br):
     for ni in br.inst:
         nop_idx.append(int((ni.address - start_addr) / 4))
 
-    nop = ks.asm("nop", 0, True)[0]
     for idx in nop_idx:
         codes[idx] = None
 
@@ -355,5 +381,9 @@ def test_single_br(addr):
 # test_single_br(0xFEC34)
 
 br_list = find_so_br_inst()
-br_list = make_patch_info(br_list)
-patch(br_list)
+success, fail = make_patch_info(br_list)
+patch(success)
+
+
+# br_list = load_br_list(state, "./patch_success.json")
+# patch(br_list)
