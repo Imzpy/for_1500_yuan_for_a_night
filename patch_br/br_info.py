@@ -16,6 +16,9 @@ class BrIfInfo:
         self.false_value = None
         self.value = None
 
+    def __str__(self):
+        return json.dumps(self, cls=BrIfInfoEncoder)
+
 
 class BrIfInfoEncoder(json.JSONEncoder):
     def default(self, obj):

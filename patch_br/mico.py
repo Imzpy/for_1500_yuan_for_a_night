@@ -33,7 +33,7 @@ def find_reg_dep_inst(irsb, target_reg):
             elif isinstance(data, pyvex.expr.Unop):
                 result.update(make_interested_value(data.args))
             elif isinstance(data, pyvex.expr.Load):
-                print("waring read mem")
+                # print("waring read mem")
                 result.update(make_interested_value(data.addr))
             elif isinstance(data, pyvex.expr.Binop):
                 result.update(make_interested_value(data.args))

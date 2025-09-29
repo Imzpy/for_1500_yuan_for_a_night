@@ -25,12 +25,12 @@ ks = keystone.Ks(KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN)
 
 so_path = r'D:\desktop\ollvm\360\ida\rep.so'
 project = angr.Project(so_path, auto_load_libs=False,
-                       load_options={'main_opts': {'base_addr': 0}})
+                       load_options={'main_opts': {'base_addr': 0xC8000}})
 
 state = project.factory.entry_state()
 
-text_start = 0x16FD0
-text_end = 0x1464BC
+text_start = 0xF3C8C
+text_end = 0x1C597C
 
 
 def find_br_dep_inst(block: angr.Block):
@@ -230,7 +230,7 @@ def patch_cset_br(br):
 
     if not br.inst or len(br.inst) == 0:
         return None
-    if br.inst[0].mnemonic != "cmp":
+    if br.inst[0].mnemonic != "cmp" or br.inst[0].mnemonic != "tst":
         return None
     cset = has_one_inst(br.inst, "cset")
     if not cset:
@@ -317,7 +317,7 @@ def patch_br(br):
 
 
 def patch(br_list):
-    patch = PatchSo(so_path)
+    patch = PatchSo(project, so_path)
     result = []
     for br in br_list:
         r = None
@@ -333,10 +333,23 @@ def patch(br_list):
     patch.save()
     return result
 
-# br_list = find_br_if()
+
+def test_single_br(addr):
+    block = project.factory.block(addr)
+    info = find_br_dep_inst(block)
+    info = evl_indirect_br_value(info)
+    print(info)
+
+
 # br_list = load_br_if("br_if_patch.json")
 # br_if_list = filter_br_if(br_list)
 # br = judge_br_if(project.factory.block(0x109284))
 # patch(make_pathc_info(br_list))
 # patch(br_list)
 # print(br_list_to_json(br_if_list))
+
+# test_single_br(0xFEC34)
+
+br_list = find_so_br_inst()
+br_list = make_patch_info(br_list)
+patch(br_list)
