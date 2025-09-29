@@ -164,7 +164,7 @@ def evl_direct_br_value(br: BrIfInfo):
     while lastPc <= addr:
         sim.step(num_inst=1)
         if not len(sim.active) == 1:
-            print("---end---", hex(lastPc + 4))
+            # print("---end---", hex(lastPc + 4))
             state = project.factory.blank_state(addr=lastPc + 4)
             sim = project.factory.simgr(state)
             sim.step(num_inst=1)
@@ -174,7 +174,7 @@ def evl_direct_br_value(br: BrIfInfo):
         for active_state in sim.active[:]:
             pc = active_state.solver.eval(active_state.regs.pc)
             if pc < lastPc or pc > addr:
-                print("---end2---", hex(lastPc + 4))
+                # print("---end2---", hex(lastPc + 4))
                 state = project.factory.blank_state(addr=lastPc + 4)
                 sim = project.factory.simgr(state)
                 sim.step(num_inst=1)
@@ -204,7 +204,8 @@ def evl_direct_br_value(br: BrIfInfo):
 
 
 def make_patch_info(br_if_list):
-    result = []
+    success = []
+    fail = []
     for item in br_if_list:
         r = evl_indirect_br_value(item)
         if not r:
@@ -213,11 +214,15 @@ def make_patch_info(br_if_list):
             item.true_value = r.get("true_value")
             item.false_value = r.get("false_value")
             item.value = r.get("value")
-            result.append(item)
-            if len(result) % 10 == 0:
-                open("br_if_patch.json", "w").write(br_list_to_json(result))
-    open("br_if_patch.json", "w").write(br_list_to_json(result))
-    return result
+            success.append(item)
+            if len(success) % 10 == 0:
+                open("patch_success.json", "w").write(br_list_to_json(success))
+        else:
+            fail.append(item)
+
+    open("patch_success.json", "w").write(br_list_to_json(success))
+    open("patch_fail.json", "w").write(br_list_to_json(fail))
+    return success, fail
 
 
 def patch_cset_br(br):
@@ -347,7 +352,6 @@ def test_single_br(addr):
 # patch(make_pathc_info(br_list))
 # patch(br_list)
 # print(br_list_to_json(br_if_list))
-
 # test_single_br(0xFEC34)
 
 br_list = find_so_br_inst()
