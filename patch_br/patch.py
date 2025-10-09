@@ -238,6 +238,9 @@ def patch_cset_br(br):
     def only_has_one(insts: [DisassemblerInsn], name):
         return len(find_all_inst(insts, name)) == 1
 
+    def is_inst(item, inst):
+        return item.mnemonic == inst
+
     if not br.inst or len(br.inst) == 0:
         print("inst is empty", hex(br.block_addr))
         return None
@@ -318,6 +321,11 @@ def patch_cset_br(br):
     codes = bytes_to_chunks(code_bytes)
     nop_idx = []
     for ni in br.inst:
+        if (is_inst(ni, "cmp") or
+                is_inst(ni, "tst")
+                or is_inst(ni, "fcmp")
+                or is_inst(ni, "cmn")):
+            continue
         nop_idx.append(int((ni.address - start_addr) / 4))
 
     for idx in nop_idx:
@@ -380,10 +388,10 @@ def test_single_br(addr):
 # print(br_list_to_json(br_if_list))
 # test_single_br(0xFEC34)
 
-br_list = find_so_br_inst()
-success, fail = make_patch_info(br_list)
-patch(success)
+# br_list = find_so_br_inst()
+# success, fail = make_patch_info(br_list)
+# patch(success)
 
 
-# br_list = load_br_list(state, "./patch_success.json")
-# patch(br_list)
+br_list = load_br_list(state, "./patch_success.json")
+patch(br_list)

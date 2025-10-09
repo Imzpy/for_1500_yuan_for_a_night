@@ -49,4 +49,4 @@ def merge_java_files(directory_path, output_file='merged_java_files.java'):
     print(f"总共处理了 {len(java_files)} 个文件。")
 
 
-merge_java_files(r"D:\desktop\bh\1\src")
+merge_java_files(r"D:\desktop\wgsdk\sdk1\3\dex\src")
