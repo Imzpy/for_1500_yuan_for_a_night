@@ -2,51 +2,67 @@ import glob
 import os
 import sys
 
+import os
+import glob
 
-def merge_java_files(directory_path, output_file='merged_java_files.java'):
-    """
-    递归合并指定目录及其子目录下所有 .java 文件到一个输出文件中。
 
-    Args:
-        directory_path (str): 要扫描的目录路径，默认为当前目录。
-        output_file (str): 输出文件名，默认为 'merged_java_files.java'。
-
-    Returns:
-        None: 直接写入文件并打印结果。
-    """
-    # 构建递归 .java 文件的 glob 模式
-    java_pattern = os.path.join(directory_path, '**', '*.java')
-    # 获取所有 .java 文件列表（递归=True）
-    java_files = glob.glob(java_pattern, recursive=True)
-
-    # 按文件路径排序，确保输出顺序一致
-    java_files.sort()
-
-    if not java_files:
-        print(f"在目录 '{directory_path}' 及其子目录中未找到任何 .java 文件。")
+def merge_files(directory_path, extensions, output_file=None):
+    if not extensions:
+        print("扩展名列表为空，未进行任何搜索。")
         return
 
-    print(f"找到 {len(java_files)} 个 .java 文件，开始合并...")
+    # 动态生成搜索模式
+    patterns = [os.path.join(directory_path, '**', f'*{ext}') for ext in extensions]
+    print(f"搜索模式: {patterns}")
 
-    # 以写入模式打开输出文件（覆盖现有文件）
-    with open(os.path.join(directory_path, output_file), 'wb') as outfile:
-        for java_file in java_files:
-            # 添加文件路径作为分隔符（以 Java 注释形式）
-            relative_path = os.path.relpath(java_file, directory_path)
-            outfile.write(f"\n// ==================== 文件: {relative_path} ====================\n\n".encode("utf-8"))
+    # 收集所有匹配文件
+    matched_files = []
+    for pattern in patterns:
+        files = glob.glob(pattern, recursive=True)
+        matched_files.extend(files)
+        print(f"扩展名 '{pattern.split("/")[-1]}' 匹配到 {len(files)} 个文件。")
 
-            # 读取并写入文件内容
+    matched_files = list(set(matched_files))  # 去重（如果扩展名重叠）
+    matched_files.sort()  # 按路径排序
+
+    if not matched_files:
+        print(f"在目录 '{directory_path}' 及其子目录中未找到任何匹配文件（扩展名: {extensions}）。")
+        return
+
+    print(f"找到 {len(matched_files)} 个文件，开始合并...")
+
+    # 自动生成输出文件名，如果未指定
+    if output_file is None:
+        first_ext = extensions[0].lstrip('.')  # 如 '.java' -> 'java'
+        output_file = f'merged_{first_ext}_files.{first_ext}'
+
+    output_path = os.path.join(directory_path, output_file)
+
+    with open(output_path, 'wb') as outfile:
+        for file_path in matched_files:
+            relative_path = os.path.relpath(file_path, directory_path)
+            # 动态分隔符，根据扩展名调整注释
+            ext = os.path.splitext(file_path)[1]
+            outfile.write(
+                f"\n// ==================== 文件: {relative_path} (扩展名: {ext}) ====================\n\n".encode(
+                    "utf-8"))
             try:
-                with open(java_file, 'rb') as infile:
+                with open(file_path, 'rb') as infile:
                     content = infile.read()
                     outfile.write(content)
                     outfile.write(b'\n')
             except Exception as e:
-                print(f"读取文件 '{java_file}' 时出错: {e}")
+                print(f"读取文件 '{file_path}' 时出错: {e}")
                 continue
 
-    print(f"合并完成！输出文件: '{output_file}'")
-    print(f"总共处理了 {len(java_files)} 个文件。")
+    print(f"合并完成！输出文件: '{output_path}'")
+    print(f"总共处理了 {len(matched_files)} 个文件（扩展名: {extensions}）。")
 
 
-merge_java_files(r"D:\desktop\wgsdk\sdk1\3\dex\src")
+all_file = [
+    ".js",
+    ".html",
+    ".java",
+    ".kt"
+]
+merge_files(r"D:\desktop\ads\applovin\10.17\src", all_file)
