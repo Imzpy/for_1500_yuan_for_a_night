@@ -355,29 +355,23 @@ def patch_br(br):
     }
 
 
-def patch(br_list):
-    patch = PatchSo(project, so_path)
-    result = []
+def patch(br_list, modify_so=False):
+    if modify_so:
+        patch = PatchSo(project, so_path)
     for br in br_list:
-        r = None
+        result = None
         if br.value:
-            r = patch_br(br)
+            result = patch_br(br)
         elif br.true_value and br.false_value:
-            r = patch_cset_br(br)
-        if r:
-            patch.patch(r["addr"], r["codes"])
-            r["codes"] = r["codes"].hex()
-            result.append(r)
-    open("patch.json", "w").write(json.dumps(result))
-    patch.save()
-    return result
-
-
-def test_single_br(addr):
-    block = project.factory.block(addr)
-    info = find_br_dep_inst(block)
-    info = evl_indirect_br_value(info)
-    print(info)
+            result = patch_cset_br(br)
+        if result:
+            if modify_so:
+                patch.patch(result["addr"], result["codes"])
+            br["patch_addr"] = result["addr"]
+            br["patch_codes"] = result["codes"].hex()
+    open("patch.json", "w").write(json.dumps(br_list))
+    if modify_so:
+        patch.save()
 
 
 # br_list = load_br_if("br_if_patch.json")
