@@ -65,4 +65,4 @@ all_file = [
     ".java",
     ".kt"
 ]
-merge_files(r"D:\desktop\ads\applovin\10.17\src", all_file)
+merge_files(r"D:\desktop\ads\google\gms\gms\cronet", all_file)

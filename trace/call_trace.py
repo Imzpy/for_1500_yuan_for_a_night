@@ -135,6 +135,6 @@ def make_call_trace(path):
     open(path + "/../call_trace.txt", "w").write(result)
 
 
-make_call_trace(r"D:\desktop\ollvm\360\log\trace5\trace_call_3920_2126448475")
+make_call_trace(r"D:\desktop\tmp\trace_call_19697_1496087063")
 # make_call_trace(r"D:\desktop\ollvm\360\log\trace2\trace_call_18837_1724929177")
 # make_call_trace(r"F:\desktop\360\log\trace_12254_1278053216")

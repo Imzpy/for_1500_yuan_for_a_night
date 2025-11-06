@@ -3,6 +3,7 @@
 IDA Pro 9.0 IDAPython 脚本：自动识别并修复 ARM64 Switch
 基于 ida_nalt API (get/set/del_switch_info)。
 """
+import ida_idp
 # 参数名称,含义,类型/示例值（基于您的代码）,备注
 # Indirect jump,间接跳转指令的地址。这是 switch 的入口点，通常是 BR reg（ARM64）或 JMP [reg]（x86）。,0xFCC98（BR X9 的地址）,必填。光标位置默认填充此值。
 # Jump table,跳转表的起始地址。表包含固定数量的元素（每个元素为地址或偏移），用于索引计算目标。,0x1F9A28（off_1F9A28，包含 DCQ 如 loc_FCC9C）,必填。表大小由代码推断（如范围检查）。您的表有至少 3 个元素（0x9C CC 0F、DC CC 0F、A8 CC 0F）。
@@ -30,16 +31,16 @@ IDA Pro 9.0 IDAPython 脚本：自动识别并修复 ARM64 Switch
 # Table element is insn,表元素是指令偏移（insn delta），而非数据地址。常见于 PC-relative 跳转（如 ARM 的 B）。,❌ 关闭,元素是绝对数据地址（QWORD ea），非指令。启用会将表误为代码，破坏解析。
 
 
-# 对话框字段,si 结构体成员,类型/说明,示例（您的代码）
-# Address of jump table,si.jumps,ea_t（地址）：表起始 ea。,0x1F9A28
-# Number of elements,si.ncases 或 si.cases,size_t（整数）：有效 case 数；cases 为数组大小。,3
-# Size of table element,si.elsize,ushort（字节）：元素大小（1/2/4/8）。,8 (QWORD)
-# Element shift amount,si.shift,char（位数）：左移量（0-7 典型）。,0
-# Element base value,si.base 或 si.jtable_base,ea_t（地址）：计算基址（0 为绝对）。,0
-# Start of the switch idiom,si.idiom_ea 或 si.start,ea_t（地址）：结构起始 ea（用于表达式追踪）。,0xFCC88
-# Input register of switch,si.reg,"reg_t（寄存器 ID）：输入 reg（e.g., ARM 的 PR_X9 =9）。",9 (X9)
-# First (lowest) input value,si.low 或 si.first_input,sword（有符号 int）：最低输入值偏移。,0
-# Default jump address,si.def_jump,ea_t（地址）：默认目标 ea。,0xFCCA8
+# 对话框字段                             ,si 结构体成员,类型/说明,示例（您的代码）
+# Address of jump table                 ,si.jumps,ea_t（地址）：表起始 ea。,0x1F9A28
+# Number of elements                    ,si.ncases 或 si.cases,size_t（整数）：有效 case 数；cases 为数组大小。,3
+# Size of table element                 ,si.elsize,ushort（字节）：元素大小（1/2/4/8）。,8 (QWORD)
+# Element shift amount                  ,si.shift,char（位数）：左移量（0-7 典型）。,0
+# Element base value                    ,si.base 或 si.jtable_base,ea_t（地址）：计算基址（0 为绝对）。,0
+# Start of the switch idiom             ,si.idiom_ea 或 si.start,ea_t（地址）：结构起始 ea（用于表达式追踪）。,0xFCC88
+# Input register of switch              ,si.reg,"reg_t（寄存器 ID）：输入 reg（e.g., ARM 的 PR_X9 =9）。",9 (X9)
+# First (lowest) input value            ,si.low 或 si.first_input,sword（有符号 int）：最低输入值偏移。,0
+# Default jump address                  ,si.def_jump,ea_t（地址）：默认目标 ea。,0xFCCA8
 
 
 # Separate value table is present：si.flags & SWI_SEP_VALUE_TAB（位标志）。
@@ -48,118 +49,27 @@ IDA Pro 9.0 IDAPython 脚本：自动识别并修复 ARM64 Switch
 # Table element is insn：si.flags & SWI_INSN_ELTS。
 
 
-
 import idaapi
 import ida_nalt
-import ida_bytes
 import idc
-import idautils
 
-# 配置（自动检测或手动）
-SWITCH_EA = 0xFCC98      # BR X9
-TABLE_EA = 0x1F9A28      # 表基址
-ENTRY_SIZE = 8           # ARM64 指针
-NUM_CASES = 3            # case 数
-LOW_CASE = 0
-HIGH_CASE = 2
-MARK_UNUSED = True       # 标记未用 case
-
-def log(msg):
-    print(f"[SwitchFix] {msg}")
-    idc.Message(f"[SwitchFix] {msg}\n")
-
-def ensure_table_defined():
-    for i in range(NUM_CASES):
-        ea = TABLE_EA + i * ENTRY_SIZE
-        if ida_bytes.get_item_size(ea) != ENTRY_SIZE:
-            ida_bytes.create_qword(ea, ENTRY_SIZE)  # 定义 dq
-            log(f"Defined qword at 0x{ea:X}")
-
-def get_cases():
-    cases = []
-    for i in range(NUM_CASES):
-        ea = TABLE_EA + i * ENTRY_SIZE
-        target = ida_bytes.get_qword(ea)
-        cases.append((i, target))
-        log(f"Case {i}: 0x{target:X}")
-    return cases
 
 def fix_switch():
-    ensure_table_defined()
-    cases = get_cases()
-
-    # 构建 switch_info_t
     si = ida_nalt.switch_info_t()
-    si.jumps = TABLE_EA          # 跳转表地址
-    si.elbase = 0                # 基址偏移 (ARM64 通常 0)
-    si.startea = SWITCH_EA       # switch 开始
-    si.ncases = NUM_CASES        # case 数
-    si.lowcase = LOW_CASE
-    si.defjump = 0               # 默认 case (若无，0)
-    si.flags = ida_nalt.SWI_J32 | ida_nalt.SWI_V32  # 32-bit 跳转/值 (调整为 ARM64)
-    si.set_jsize(ENTRY_SIZE)     # 条目大小
-    si.set_vsize(4)              # 值大小 (W 寄存器)
+    si.jumps = 0x1F9A28  # 跳转表地址
+    si.elbase = 0  # 基址偏移 (ARM64 通常 0)
+    si.startea = 0xFCC98  # switch 开始
+    si.ncases = 3  # case 数
+    si.lowcase = 0
+    si.defjump = 0  # 默认 case (若无，0)
+    si.set_jtable_element_size(8)  # 元素字节大小
+    si.regnum = idaapi.str2reg("x9")
+    ida_nalt.set_switch_info(0xFCC98, si)
+    print("Switch info set via set_switch_info")
 
-    # 设置 switch info (创建/更新)
-    ida_nalt.set_switch_info(SWITCH_EA, si)
-    log("Switch info set via set_switch_info")
-    #    si = idaapi.switch_info_t()
-    #             si.jumps = table_addr  # 跳转表地址
-    #             si.ncases = 2  # case数量
-    #             si.elbase = table_addr  # 表基址
-    #             si.startea = cmp_ea  # switch起始
-    #             si.defjump = 0  # 默认jump (需手动调整如果有)
-    #             si.flags = idaapi.SWI_DEFAULT | idaapi.SWI_JMPINV  # 间接跳转
-    #             si.lowcase = 0
-    #             si.values = idaapi.uchar_vec_t([0, 1])  # 非连续values，如果适用
-    #             si.set_jtable_element_size(8)  # 8字节项
-    #             si.set_shift(3)  # 移位3
-    #
-    #             # 应用到BR指令
-    #             idaapi.set_switch_info(br_ea, si)
-    #             idaapi.create_switch_table(br_ea, si)
-    #             idaapi.create_insn(br_ea)  # 刷新
-
-
-    # 映射 case 并添加 XREF
-    for case_val, target in cases:
-        if target:
-            idc.set_name(target, f"case_{case_val}", ida_nalt.SN_AUTO)
-            idautils.add_cref(SWITCH_EA, target, ida_nalt.fl_JN)
-            log(f"Mapped case_{case_val} at 0x{target:X}")
-
-    # 标记未用 (检查 XREF)
-    if MARK_UNUSED:
-        for case_val, target in cases:
-            if len(list(idautils.XrefsTo(target))) <= 1:  # <=1 表示未用
-                idc.set_cmt(target, "; UNUSED CASE", 0)
-                log(f"Marked case {case_val} as unused")
-
-    # 刷新
     idaapi.auto_wait()
     idc.refresh_idaview_anyway()
 
-    # 验证
-    out_si = ida_nalt.switch_info_t()
-    if ida_nalt.get_switch_info(out_si, SWITCH_EA) > 0:
-        log("Switch verified successfully")
-    else:
-        log("Warning: Switch info not retrieved")
-
-
-
-
-
-
-
-
-
-
-
-def main():
-    log("Starting ARM64 Switch Fix...")
-    fix_switch()
-    log("Completed. Check Pseudocode (F5) for switch.")
 
 if __name__ == "__main__":
-    main()
+    fix_switch()
