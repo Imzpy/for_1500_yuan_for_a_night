@@ -81,6 +81,14 @@ def find_so_br_inst():
     return result
 
 
+def fix_one(addr):
+    block = project.factory.block(addr)
+    info = find_br_dep_inst(block)
+    if not info:
+        return None
+    return make_patch_info([info], False)
+
+
 def evl_if_br_value(state, value):
     def get_register_name(state, target_bvs):
         for reg_id, reg_name in state.arch.register_names.items():
@@ -205,7 +213,7 @@ def evl_direct_br_value(br: BrIfInfo):
     return None
 
 
-def make_patch_info(br_if_list):
+def make_patch_info(br_if_list, save=True):
     success = []
     fail = []
     for item in br_if_list:
@@ -217,13 +225,13 @@ def make_patch_info(br_if_list):
             item.false_value = r.get("false_value")
             item.value = r.get("value")
             success.append(item)
-            if len(success) % 10 == 0:
+            if len(success) % 10 == 0 and save:
                 open("patch_success.json", "w").write(br_list_to_json(success))
         else:
             fail.append(item)
-
-    open("patch_success.json", "w").write(br_list_to_json(success))
-    open("patch_fail.json", "w").write(br_list_to_json(fail))
+    if save:
+        open("patch_success.json", "w").write(br_list_to_json(success))
+        open("patch_fail.json", "w").write(br_list_to_json(fail))
     return success, fail
 
 
@@ -386,6 +394,9 @@ def patch(br_list, modify_so=False):
 # success, fail = make_patch_info(br_list)
 # patch(success)
 
+# br_list = load_br_list(state, "./patch_success.json")
+# patch(br_list)
 
-br_list = load_br_list(state, "./patch_success.json")
-patch(br_list)
+
+success, fail = fix_one(0xFCCDC)
+print(success[0])
