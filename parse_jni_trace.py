@@ -6,7 +6,7 @@ from pandas import Series
 
 
 def main():
-    input_file = r"D:\desktop\保活\1127\log\log_7082_338010728"
+    input_file = r"D:\desktop\保活\1127\log\log_8864_433128934"
     output_file = r"D:\desktop\保活\1127\log\log"
 
     allData = []
