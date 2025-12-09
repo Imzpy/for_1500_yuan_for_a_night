@@ -6,8 +6,7 @@ from pandas import Series
 
 
 def main():
-    input_file = r"D:\desktop\保活\1127\log\log_8864_433128934"
-    output_file = r"D:\desktop\保活\1127\log\log"
+    input_file = r"D:\desktop\保活\1127\log_18436_1010053665"
 
     allData = []
     with open(input_file, "r", encoding="utf-8") as f:
@@ -23,7 +22,7 @@ def main():
 
     data_series = [Series(d) for d in allData]
     df = pd.DataFrame(data_series, columns=["tid", "name", "invoke", "return", "args", "stack"])
-    df.to_excel(output_file + ".xlsx", index=False, engine="openpyxl")
+    df.to_excel(input_file + ".xlsx", index=False, engine="openpyxl")
 
 
 if __name__ == "__main__":
