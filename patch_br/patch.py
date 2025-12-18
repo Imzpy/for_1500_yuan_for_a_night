@@ -24,14 +24,23 @@ cs = capstone.Cs(CS_ARCH_ARM64, CS_MODE_ARM)
 ks = keystone.Ks(KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN)
 nop = ks.asm("nop", 0, True)[0]
 
-so_path = r'D:\desktop\ollvm\360\ida\rep.so'
+# so_path = r'D:\desktop\ollvm\360\ida\rep.so'
+# text_start = 0xF3C8C
+# text_end = 0x1C597C
+# project = angr.Project(so_path, auto_load_libs=False,
+#                        load_options={'main_opts': {'base_addr': 0xC8000}})
+
+so_path = r'D:\desktop\保活\1215\2.so'
+
 project = angr.Project(so_path, auto_load_libs=False,
-                       load_options={'main_opts': {'base_addr': 0xC8000}})
+                       load_options={'main_opts': {'base_addr': 0}})
+text_section = project.loader.main_object.sections_map['.text']
+text_start = text_section.vaddr
+text_end = text_section.vaddr + text_section.filesize
+print("text_start", text_start)
+print("text_end", text_end)
 
 state = project.factory.entry_state()
-
-text_start = 0xF3C8C
-text_end = 0x1C597C
 
 
 def find_br_dep_inst(block: angr.Block):
@@ -388,15 +397,15 @@ def patch(br_list, modify_so=False):
 # patch(make_pathc_info(br_list))
 # patch(br_list)
 # print(br_list_to_json(br_if_list))
-# test_single_br(0xFEC34)
 
-# br_list = find_so_br_inst()
-# success, fail = make_patch_info(br_list)
-# patch(success)
+
+br_list = find_so_br_inst()
+success, fail = make_patch_info(br_list)
+patch(success)
 
 # br_list = load_br_list(state, "./patch_success.json")
 # patch(br_list)
 
 
-success, fail = fix_one(0xFCCDC)
-print(success[0])
+# success, fail = fix_one(0xFCCDC)
+# print(success[0])
