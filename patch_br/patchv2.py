@@ -26,7 +26,7 @@ logging.getLogger('cle').setLevel(logging.ERROR)
 
 so_path = r'D:\desktop\保活\1215\2.so'
 
-project = angr.Project(so_path, auto_load_libs=False,
+project = angr.Project(so_path, auto_load_libs=False, perform_relocations=False,
                        load_options={'main_opts': {'base_addr': 0}})
 text_section = project.loader.main_object.sections_map['.text']
 text_start = text_section.vaddr
@@ -143,7 +143,8 @@ def run_block(block: angr.Block, state):
     sim = project.factory.simgr(state)
     pc = block.addr
     sim.active[0].regs.pc = pc
-
+    if pc == 0x14F500:
+        print("")
     while pc < block.addr + block.size - 4:
         # print(disasm(state, pc).mnemonic)
         sim.step(num_inst=1)
@@ -191,7 +192,7 @@ def visit_block(block, state, callback):
             if value.symbolic:
                 return solve_symbolic(block, new_state)
             else:
-                callback(block.addr + block.size - 4, inst, value.v)
+                callback(inst, value.v)
                 return [(block.addr + block.size, new_state)]
         print("wtf3")
 
@@ -201,7 +202,7 @@ def visit_block(block, state, callback):
             if value.symbolic:
                 return solve_symbolic(block, new_state)
             else:
-                callback(block.addr + block.size - 4, inst, value.v)
+                callback(inst, value.v)
                 return [(value.v, new_state)]
         print("wtf1")
 
@@ -250,9 +251,22 @@ def process_func(addr):
     state.options.add(angr.options.SYMBOLIC_INITIAL_VALUES)
     stack = [(func_start, state)]
     visited = set()
+    patch_info = []
 
-    def on_fix_br(addr, inst, real_target):
-        print("fix ", hex(addr), inst, hex(real_target))
+    def on_fix_br(inst, real_target):
+        print("fix ", inst, hex(real_target))
+        fix_inst = ""
+        if inst.mnemonic == "blr":
+            fix_inst = "bl "
+        elif inst.mnemonic == "br":
+            fix_inst = "b "
+        else:
+            print("wtf4")
+        info = {
+            "addr": inst.address,
+            "code": ks.asm(fix_inst + hex(real_target), inst.address, True)[0].hex()
+        }
+        patch_info.append(info)
 
     while stack:
         current_addr, current_state = stack.pop()
@@ -281,6 +295,8 @@ def process_func(addr):
 
     blocks_keys_sorted = ', '.join(map(hex, sorted(blocks.keys())))
     print("all", blocks_keys_sorted)
+
+    print("patch_info", json.dumps(patch_info))
 
 
 process_func(0x14F394)
