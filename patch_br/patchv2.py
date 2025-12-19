@@ -158,9 +158,12 @@ def find_br_dep_inst(block: angr.Block):
     return depend
 
 
-def run_block(block: angr.Block, state, stop_addr=None):
+def run_block(block: angr.Block, state, start_addr=None, stop_addr=None):
     sim = project.factory.simgr(state)
-    pc = block.addr
+    if start_addr:
+        pc = start_addr
+    else:
+        pc = block.addr
     sim.active[0].regs.pc = pc
     while pc < block.addr + block.size - 4:
         # print(disasm(state, pc).mnemonic)
@@ -268,27 +271,39 @@ def fix_complex_csel_br(start_state, end_state, block: angr.Block, depend):
                 return inst
         return None
 
+    br = block.capstone.insns[len(block.capstone.insns) - 1]
     csel = find_inst("csel")
-    pre_state = run_block(block, start_state.copy(), csel.address)
+    pre_state = run_block(block, start_state.copy(), stop_addr=csel.address)
     rd = csel.operands[0].value.reg
     rn = csel.operands[1].value.reg
     rm = csel.operands[2].value.reg
     cond = csel.op_str.split(", ")[3]
 
-    pre_state.regs.set(cs.reg_name(rd), pre_state.regs.get(cs.reg_name(rn)))
-    rn_state = run_block(block, pre_state.copy())
+    start = csel.address + 4
 
-    pre_state.regs.set(cs.reg_name(rd), pre_state.regs.get(cs.reg_name(rm)))
-    rm_state = run_block(block, pre_state.copy())
+    pre_state.registers.store(cs.reg_name(rd), pre_state.regs.get(cs.reg_name(rn)))
+    rn_state = run_block(block, pre_state.copy(), start_addr=start)
+    rn_value = rn_state.regs.get(cs.reg_name(br.operands[0].value.reg))
+    if rn_value.symbolic:
+        return None, None
+
+    pre_state.registers.store(cs.reg_name(rd), pre_state.regs.get(cs.reg_name(rm)))
+    rm_state = run_block(block, pre_state.copy(), start_addr=start)
+    rm_value = rn_state.regs.get(cs.reg_name(br.operands[0].value.reg))
+    if rm_value.symbolic:
+        return None, None
 
     return [
         {
-            "inst": "",
-            "real_addr": 0,
+            "inst": "b." + cond,
+            "real_addr": rn_value.v,
         }, {
-            "inst": "",
-            "real_addr": 0,
+            "inst": "b",
+            "real_addr": rm_value.v,
         }
+    ], [
+        csel.address,
+        br.address
     ]
 
 
@@ -312,13 +327,48 @@ def fix_complex_br(start_state, end_state, block: angr.Block):
         return None
 
     new_13 = None
+    nop_addr = None
     if count_inst("csel") == 1:
-        new_13 = fix_complex_csel_br(start_state, end_state, block, depend)
+        new_13, nop_addr = fix_complex_csel_br(start_state, end_state, block, depend)
     elif count_inst("csel") > 1:
         print("more than one csel")
         return None
 
-    return None
+    if len(new_13) > len(nop_addr):
+        print("new_13 > nop_addr")
+        return None
+
+    br = block.capstone.insns[len(block.capstone.insns) - 1]
+    start_addr = block.capstone.insns[0].address
+    size = br.address - start_addr + 4
+    code = state.memory.load(start_addr, size)
+    code_bytes = state.solver.eval(code, cast_to=bytes)
+    codes = bytes_to_chunks(code_bytes)
+
+    def addr2idx(addr):
+        return int((addr - br.address) / 4)
+
+    for item in nop_addr:
+        codes[addr2idx(item)] = None
+    codes = move_none_to_end(codes)
+
+    def get_nop_addr():
+        index = 0
+        for idx in range(0, len(codes)):
+            if codes[idx] == None:
+                index = idx
+                break
+
+        return index, br.address + index * 4
+
+    for item in new_13:
+        idx, addr = get_nop_addr()
+        codes[idx] = ks.asm(item["inst"] + " " + hex(item["real_addr"]), addr, True)[0]
+
+    return {
+        "addr": br.address,
+        "code": chunks_to_bytes(codes).hex()
+    }
 
 
 def process_func(addr):
@@ -357,9 +407,8 @@ def process_func(addr):
         patch_info.append(info)
 
     def on_complex_br(start_state, end_state, block):
-        # result = fix_complex_br(start_state, end_state, block)
-        # patch_info.append(result)
-        pass
+        result = fix_complex_br(start_state, end_state, block)
+        patch_info.append(result)
 
     while stack:
         current_addr, current_state = stack.pop()
@@ -392,8 +441,8 @@ def process_func(addr):
     print("patch_info", json.dumps(patch_info))
 
 
-# process_func(0x14F394)
+process_func(0x14F394)
 
 # print(serialize_instruction_list()
 
-find_br_dep_inst(project.factory.block(0x150138))
+# find_br_dep_inst(project.factory.block(0x150138))
