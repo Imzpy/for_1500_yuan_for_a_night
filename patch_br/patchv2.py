@@ -11,13 +11,14 @@ from keystone import *
 import pyvex
 import archinfo
 
-from patch_br.br_info import BrIfInfo, br_list_to_json, load_br_list
+from patch_br.br_info import BrIfInfo, br_list_to_json, load_br_list, serialize_instruction_list
 from patch_br.mico import find_reg_dep_inst
 from patch_br.patch_so import PatchSo
 from patch_br.tools import bytes_to_chunks, move_none_to_end, chunks_to_bytes, disasm
 
 cs = capstone.Cs(CS_ARCH_ARM64, CS_MODE_ARM)
 ks = keystone.Ks(KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN)
+nop = ks.asm("nop", 0, True)[0]
 
 logging.getLogger('angr').setLevel(logging.ERROR)
 logging.getLogger('claripy').setLevel(logging.ERROR)
@@ -26,7 +27,7 @@ logging.getLogger('cle').setLevel(logging.ERROR)
 
 so_path = r'D:\desktop\保活\1215\2.so'
 
-project = angr.Project(so_path, auto_load_libs=False, perform_relocations=False,
+project = angr.Project(so_path, auto_load_libs=False,
                        load_options={'main_opts': {'base_addr': 0}})
 text_section = project.loader.main_object.sections_map['.text']
 text_start = text_section.vaddr
@@ -35,6 +36,11 @@ print("text_start", text_start)
 print("text_end", text_end)
 
 state = project.factory.entry_state()
+
+symbols = {}
+
+for item in project.loader.extern_object.symbols:
+    symbols[item.rebased_addr] = item.name
 
 
 def angr_get_reg_idx_by_name(name):
@@ -139,14 +145,27 @@ def get_all_block(start, end):
     return blocks
 
 
-def run_block(block: angr.Block, state):
+def find_br_dep_inst(block: angr.Block):
+    depend = []
+    lastInst = block.capstone.insns[len(block.capstone.insns) - 1]
+    code_bytes = project.loader.memory.load(block.addr, block.size)
+    irsb = pyvex.lift(code_bytes, block.addr, archinfo.ArchAArch64(), opt_level=0)
+    dep_inst_addr = find_reg_dep_inst(irsb, cs.reg_name(lastInst.operands[0].value.reg))
+    for inst in block.capstone.insns:
+        if inst.address in dep_inst_addr:
+            depend.append(inst)
+    depend.append(lastInst)
+    return depend
+
+
+def run_block(block: angr.Block, state, stop_addr=None):
     sim = project.factory.simgr(state)
     pc = block.addr
     sim.active[0].regs.pc = pc
-    if pc == 0x14F500:
-        print("")
     while pc < block.addr + block.size - 4:
         # print(disasm(state, pc).mnemonic)
+        if stop_addr is not None and pc == stop_addr:
+            break
         sim.step(num_inst=1)
         pc += 4
         for active_state in sim.active[:]:
@@ -176,8 +195,8 @@ def solve_symbolic(block: angr.Block, state):
     return next_list
 
 
-def visit_block(block, state, callback):
-    new_state = run_block(block, state)
+def visit_block(block, state, on_fix_br, on_complex_br):
+    new_state = run_block(block, state.copy())
 
     inst = block.capstone.insns[len(block.capstone.insns) - 1]
     if inst.mnemonic == "b":
@@ -190,9 +209,10 @@ def visit_block(block, state, callback):
         if inst.operands[0].type == CS_OP_REG:
             value = new_state.regs.get(cs.reg_name(inst.operands[0].value.reg))
             if value.symbolic:
+                on_complex_br(state, new_state, block)
                 return solve_symbolic(block, new_state)
             else:
-                callback(inst, value.v)
+                on_fix_br(inst, value.v)
                 return [(block.addr + block.size, new_state)]
         print("wtf3")
 
@@ -200,9 +220,10 @@ def visit_block(block, state, callback):
         if inst.operands[0].type == CS_OP_REG:
             value = new_state.regs.get(cs.reg_name(inst.operands[0].value.reg))
             if value.symbolic:
+                on_complex_br(state, new_state, block)
                 return solve_symbolic(block, new_state)
             else:
-                callback(inst, value.v)
+                on_fix_br(inst, value.v)
                 return [(value.v, new_state)]
         print("wtf1")
 
@@ -240,6 +261,66 @@ def visit_block(block, state, callback):
     print("wtf2", hex(inst.address), inst.mnemonic)
 
 
+def fix_complex_csel_br(start_state, end_state, block: angr.Block, depend):
+    def find_inst(name):
+        for inst in depend:
+            if inst.mnemonic == name:
+                return inst
+        return None
+
+    csel = find_inst("csel")
+    pre_state = run_block(block, start_state.copy(), csel.address)
+    rd = csel.operands[0].value.reg
+    rn = csel.operands[1].value.reg
+    rm = csel.operands[2].value.reg
+    cond = csel.op_str.split(", ")[3]
+
+    pre_state.regs.set(cs.reg_name(rd), pre_state.regs.get(cs.reg_name(rn)))
+    rn_state = run_block(block, pre_state.copy())
+
+    pre_state.regs.set(cs.reg_name(rd), pre_state.regs.get(cs.reg_name(rm)))
+    rm_state = run_block(block, pre_state.copy())
+
+    return [
+        {
+            "inst": "",
+            "real_addr": 0,
+        }, {
+            "inst": "",
+            "real_addr": 0,
+        }
+    ]
+
+
+def fix_complex_br(start_state, end_state, block: angr.Block):
+    depend = find_br_dep_inst(block)
+
+    def count_inst(name):
+        count = 0
+        for inst in depend:
+            if inst.mnemonic == name:
+                count += 1
+        return count
+
+    print(serialize_instruction_list(depend))
+
+    if not (count_inst("cmp") >= 0 or
+            count_inst("tst") >= 0 or
+            count_inst("fcmp") >= 0 or
+            count_inst("cmn") >= 0):
+        print("no one cmp")
+        return None
+
+    new_13 = None
+    if count_inst("csel") == 1:
+        new_13 = fix_complex_csel_br(start_state, end_state, block, depend)
+    elif count_inst("csel") > 1:
+        print("more than one csel")
+        return None
+
+    return None
+
+
 def process_func(addr):
     func_start, func_end = guess_func_range(addr)
     print(hex(func_start), hex(func_end))
@@ -262,11 +343,23 @@ def process_func(addr):
             fix_inst = "b "
         else:
             print("wtf4")
-        info = {
-            "addr": inst.address,
-            "code": ks.asm(fix_inst + hex(real_target), inst.address, True)[0].hex()
-        }
+        if symbols.get(real_target):
+            info = {
+                "addr": inst.address,
+                "inst": fix_inst,
+                "sym": symbols.get(real_target)
+            }
+        else:
+            info = {
+                "addr": inst.address,
+                "code": ks.asm(fix_inst + hex(real_target), inst.address, True)[0].hex()
+            }
         patch_info.append(info)
+
+    def on_complex_br(start_state, end_state, block):
+        # result = fix_complex_br(start_state, end_state, block)
+        # patch_info.append(result)
+        pass
 
     while stack:
         current_addr, current_state = stack.pop()
@@ -282,7 +375,7 @@ def process_func(addr):
         block = blocks[current_addr]["block"]
 
         log_next_addr = ""
-        next_states = visit_block(block, current_state, on_fix_br)
+        next_states = visit_block(block, current_state, on_fix_br, on_complex_br)
         for next_addr, next_state in next_states:
             # if func_start <= next_addr < func_end and next_addr not in visited:  # 限制在函数内
             stack.append((next_addr, next_state))
@@ -299,4 +392,8 @@ def process_func(addr):
     print("patch_info", json.dumps(patch_info))
 
 
-process_func(0x14F394)
+# process_func(0x14F394)
+
+# print(serialize_instruction_list()
+
+find_br_dep_inst(project.factory.block(0x150138))

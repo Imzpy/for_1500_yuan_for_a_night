@@ -20,18 +20,32 @@ class BrIfInfo:
         return json.dumps(self, cls=BrIfInfoEncoder)
 
 
+def serialize_instruction(inst):
+    if inst is None:
+        return None
+    return {
+        "address": inst.address,
+        "mnemonic": inst.mnemonic,
+        "op_str": inst.op_str,
+    }
+
+
+def serialize_instruction_list(inst):
+    result = []
+    for item in inst:
+        if item is None:
+            return None
+        result.append({
+            "address": item.address,
+            "mnemonic": item.mnemonic,
+            "op_str": item.op_str,
+        })
+    return result
+
+
 class BrIfInfoEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, BrIfInfo):
-            def serialize_instruction(inst):
-                if inst is None:
-                    return None
-                return {
-                    "address": inst.address,
-                    "mnemonic": inst.mnemonic,
-                    "op_str": inst.op_str,
-                }
-
             inst = []
             for item in obj.inst:
                 inst.append(serialize_instruction(item))
