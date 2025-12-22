@@ -346,7 +346,7 @@ def fix_complex_br(start_state, end_state, block: angr.Block):
     codes = bytes_to_chunks(code_bytes)
 
     def addr2idx(addr):
-        return int((addr - br.address) / 4)
+        return int((addr - start_addr) / 4)
 
     for item in nop_addr:
         codes[addr2idx(item)] = None
@@ -366,7 +366,7 @@ def fix_complex_br(start_state, end_state, block: angr.Block):
         codes[idx] = ks.asm(item["inst"] + " " + hex(item["real_addr"]), addr, True)[0]
 
     return {
-        "addr": br.address,
+        "addr": start_addr,
         "code": chunks_to_bytes(codes).hex()
     }
 
