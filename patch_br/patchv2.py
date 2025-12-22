@@ -128,7 +128,8 @@ def guess_func_range(start):
     func_end = guess_func_end(func_start + 4)
     if func_end == None:
         return None
-    return [func_start, func_end]
+    func2_start = guess_func_start(func_end + 4)
+    return [func_start, func_end, func2_start]
 
 
 def get_all_block(start, end):
@@ -198,7 +199,29 @@ def solve_symbolic(block: angr.Block, state):
     return next_list
 
 
+def count_inst(name, depend):
+    count = 0
+    for inst in depend:
+        if inst.mnemonic == name:
+            count += 1
+    return count
+
+
+def is_complex(block):
+    depend = find_br_dep_inst(block)
+    if (count_inst("csel", depend) > 0 or
+            count_inst("cset", depend) > 0 or
+            count_inst("csetm", depend) > 0 or
+            count_inst("cinc", depend) > 0 or
+            count_inst("cinv", depend) > 0 or
+            count_inst("cneg", depend) > 0):
+        return True, depend
+    return False, depend
+
+
 def visit_block(block, state, on_fix_br, on_complex_br):
+    if block.capstone.insns[0].address == 0x1501ac:
+        print("")
     new_state = run_block(block, state.copy())
 
     inst = block.capstone.insns[len(block.capstone.insns) - 1]
@@ -211,21 +234,21 @@ def visit_block(block, state, on_fix_br, on_complex_br):
     elif inst.mnemonic == "blr":
         if inst.operands[0].type == CS_OP_REG:
             value = new_state.regs.get(cs.reg_name(inst.operands[0].value.reg))
-            if value.symbolic:
-                on_complex_br(state, new_state, block)
-                return solve_symbolic(block, new_state)
-            else:
+            if not value.symbolic:
                 on_fix_br(inst, value.v)
-                return [(block.addr + block.size, new_state)]
+            return [(block.addr + block.size, new_state)]
         print("wtf3")
 
     elif inst.mnemonic == "br":
         if inst.operands[0].type == CS_OP_REG:
-            value = new_state.regs.get(cs.reg_name(inst.operands[0].value.reg))
-            if value.symbolic:
-                on_complex_br(state, new_state, block)
+            cmp, depend = is_complex(block)
+            if cmp:
+                result_next = on_complex_br(state, new_state, block, depend)
+                if result_next:
+                    return result_next
                 return solve_symbolic(block, new_state)
             else:
+                value = new_state.regs.get(cs.reg_name(inst.operands[0].value.reg))
                 on_fix_br(inst, value.v)
                 return [(value.v, new_state)]
         print("wtf1")
@@ -260,6 +283,9 @@ def visit_block(block, state, on_fix_br, on_complex_br):
           inst.mnemonic == "b.al"):
         return [(block.addr + block.size, new_state),
                 (inst.operands[0].value.imm, new_state)]
+    elif inst.mnemonic == "tbz":
+        return [(block.addr + block.size, new_state),
+                (inst.operands[2].value.imm, new_state)]
 
     print("wtf2", hex(inst.address), inst.mnemonic)
 
@@ -281,19 +307,22 @@ def fix_complex_csel_br(start_state, end_state, block: angr.Block, depend):
 
     start = csel.address + 4
 
-    pre_state.registers.store(cs.reg_name(rd), pre_state.regs.get(cs.reg_name(rn)))
+    rn_cond_value = pre_state.regs.get(cs.reg_name(rn))
+    rm_cond_value = pre_state.regs.get(cs.reg_name(rm))
+
+    pre_state.registers.store(cs.reg_name(rd), rn_cond_value)
     rn_state = run_block(block, pre_state.copy(), start_addr=start)
     rn_value = rn_state.regs.get(cs.reg_name(br.operands[0].value.reg))
     if rn_value.symbolic:
         return None, None
 
-    pre_state.registers.store(cs.reg_name(rd), pre_state.regs.get(cs.reg_name(rm)))
+    pre_state.registers.store(cs.reg_name(rd), rm_cond_value)
     rm_state = run_block(block, pre_state.copy(), start_addr=start)
-    rm_value = rn_state.regs.get(cs.reg_name(br.operands[0].value.reg))
+    rm_value = rm_state.regs.get(cs.reg_name(br.operands[0].value.reg))
     if rm_value.symbolic:
         return None, None
 
-    return [
+    new_inst = [
         {
             "inst": "b." + cond,
             "real_addr": rn_value.v,
@@ -301,42 +330,37 @@ def fix_complex_csel_br(start_state, end_state, block: angr.Block, depend):
             "inst": "b",
             "real_addr": rm_value.v,
         }
-    ], [
+    ]
+    nop_idx = [
         csel.address,
         br.address
     ]
+    print("new_inst ", new_inst)
+    print("nop_idx ", nop_idx)
+    return new_inst, nop_idx, [
+        rn_value.v, rm_value.v
+    ]
 
 
-def fix_complex_br(start_state, end_state, block: angr.Block):
-    depend = find_br_dep_inst(block)
-
-    def count_inst(name):
-        count = 0
-        for inst in depend:
-            if inst.mnemonic == name:
-                count += 1
-        return count
-
-    print(serialize_instruction_list(depend))
-
-    if not (count_inst("cmp") >= 0 or
-            count_inst("tst") >= 0 or
-            count_inst("fcmp") >= 0 or
-            count_inst("cmn") >= 0):
+def fix_complex_br(start_state, end_state, block: angr.Block, depend):
+    if not (count_inst("cmp", depend) >= 0 or
+            count_inst("tst", depend) >= 0 or
+            count_inst("fcmp", depend) >= 0 or
+            count_inst("cmn", depend) >= 0):
         print("no one cmp")
-        return None
-
+        return None, None
     new_13 = None
     nop_addr = None
-    if count_inst("csel") == 1:
-        new_13, nop_addr = fix_complex_csel_br(start_state, end_state, block, depend)
-    elif count_inst("csel") > 1:
+    next_block = None
+    if count_inst("csel", depend) == 1:
+        new_13, nop_addr, next_block = fix_complex_csel_br(start_state, end_state, block, depend)
+    elif count_inst("csel", depend) > 1:
         print("more than one csel")
-        return None
+        return None, None
 
     if len(new_13) > len(nop_addr):
         print("new_13 > nop_addr")
-        return None
+        return None, None
 
     br = block.capstone.insns[len(block.capstone.insns) - 1]
     start_addr = block.capstone.insns[0].address
@@ -359,21 +383,24 @@ def fix_complex_br(start_state, end_state, block: angr.Block):
                 index = idx
                 break
 
-        return index, br.address + index * 4
+        return index, start_addr + index * 4
 
     for item in new_13:
         idx, addr = get_nop_addr()
         codes[idx] = ks.asm(item["inst"] + " " + hex(item["real_addr"]), addr, True)[0]
 
+    next_result = []
+    for item in next_block:
+        next_result.append((item, end_state))
     return {
         "addr": start_addr,
         "code": chunks_to_bytes(codes).hex()
-    }
+    }, next_result
 
 
 def process_func(addr):
-    func_start, func_end = guess_func_range(addr)
-    print(hex(func_start), hex(func_end))
+    func_start, func_end, func2_start = guess_func_range(addr)
+    print(hex(func_start), hex(func_end), hex(func2_start))
     blocks = get_all_block(func_start, func_end)
     print("blocks size ", len(blocks))
 
@@ -406,9 +433,12 @@ def process_func(addr):
             }
         patch_info.append(info)
 
-    def on_complex_br(start_state, end_state, block):
-        result = fix_complex_br(start_state, end_state, block)
+    def on_complex_br(start_state, end_state, block, depend):
+        result, next_block = fix_complex_br(start_state, end_state, block, depend)
+        if result is None:
+            return None
         patch_info.append(result)
+        return next_block
 
     while stack:
         current_addr, current_state = stack.pop()
